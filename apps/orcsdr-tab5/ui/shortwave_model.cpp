@@ -74,9 +74,9 @@ uint32_t default_bandwidth(Mode mode) {
   return mode == Mode::am ? 6000 : mode == Mode::cw ? 500 : 2700;
 }
 uint32_t clamp_bandwidth(Mode mode, uint32_t bandwidth) {
-  return mode == Mode::am ? std::clamp(bandwidth, 3000u, 30000u) :
-         mode == Mode::cw ? std::clamp(bandwidth, 250u, 1000u) :
-                            std::clamp(bandwidth, 1800u, 3000u);
+  return mode == Mode::am ? std::clamp(bandwidth, uint32_t{3000}, uint32_t{30000}) :
+         mode == Mode::cw ? std::clamp(bandwidth, uint32_t{250}, uint32_t{1000}) :
+                            std::clamp(bandwidth, uint32_t{1800}, uint32_t{3000});
 }
 uint32_t next_bandwidth(Mode mode, uint32_t bandwidth) {
   if (mode == Mode::am) return bandwidth < 6000 ? 6000 : bandwidth < 9000 ? 9000 : 4000;

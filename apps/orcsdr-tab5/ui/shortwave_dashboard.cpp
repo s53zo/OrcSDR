@@ -87,7 +87,8 @@ void draw_frequency() {
            static_cast<unsigned long>(g_snapshot.frequency_hz % 1000u));
   text(value, 402, 159, TFT_WHITE, 4);
   const BroadcastBand* sw_band = band_for(g_snapshot.frequency_hz);
-  text(sw_band ? sw_band->label : "GENERAL HF", 402, 198, kGreen, 2);
+  text(g_snapshot.mode == Mode::cw ? "CW  /  700 Hz TONE" :
+       sw_band ? sw_band->label : "GENERAL HF", 402, 198, kGreen, 2);
 }
 
 void draw_status() {
@@ -112,11 +113,12 @@ void draw_quick_controls() {
   char value[40];
   snprintf(value, sizeof(value), "STEP %lu Hz",
            static_cast<unsigned long>(g_snapshot.step_hz));
-  button(24, 246, 236, 56, value);
-  snprintf(value, sizeof(value), "AM FILTER %.1f kHz",
-           static_cast<double>(g_snapshot.filter_bandwidth_hz) / 1000.0);
-  button(278, 246, 236, 56, value);
-  button(532, 246, 284, 56,
+  button(24, 246, 180, 56, value);
+  button(214, 246, 126, 56, mode_name(g_snapshot.mode));
+  snprintf(value, sizeof(value), "FILTER %lu Hz",
+           static_cast<unsigned long>(g_snapshot.filter_bandwidth_hz));
+  button(350, 246, 244, 56, value);
+  button(604, 246, 212, 56,
          g_snapshot.sound_enabled ? "SOUND ON" : "SOUND OFF",
          g_snapshot.sound_enabled);
 }
@@ -310,8 +312,12 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
       (2u * (g_snapshot.span_hz ? g_snapshot.span_hz : 1u))), 3,
       kSpectrumW / 2 - 2);
   M5.Display.drawFastVLine(center, kSpectrumY, kSpectrumH, kCyan);
-  M5.Display.drawFastVLine(center - half_filter, kSpectrumY, kSpectrumH, kYellow);
-  M5.Display.drawFastVLine(center + half_filter, kSpectrumY, kSpectrumH, kYellow);
+  const bool usb = g_snapshot.mode == Mode::usb;
+  const bool lsb = g_snapshot.mode == Mode::lsb;
+  const int low = usb ? center : lsb ? center - 2 * half_filter : center - half_filter;
+  const int high = lsb ? center : usb ? center + 2 * half_filter : center + half_filter;
+  M5.Display.drawFastVLine(std::clamp(low, kSpectrumX, kSpectrumX + kSpectrumW - 1), kSpectrumY, kSpectrumH, kYellow);
+  M5.Display.drawFastVLine(std::clamp(high, kSpectrumX, kSpectrumX + kSpectrumW - 1), kSpectrumY, kSpectrumH, kYellow);
   M5.Display.scroll(0, -1);
   M5.Display.pushImage(kSpectrumX, kWaterfallY + kWaterfallH - 2, kSpectrumW, 1,
                        g_waterfall_row);
@@ -365,9 +371,10 @@ Action handle_touch(int32_t x, int32_t y) {
     draw();
     return {};
   }
-  if (hit(x, y, 24, 246, 236, 56)) return {ActionKind::step_cycle};
-  if (hit(x, y, 278, 246, 236, 56)) return {ActionKind::filter_cycle};
-  if (hit(x, y, 532, 246, 284, 56)) return {ActionKind::sound_toggle};
+  if (hit(x, y, 24, 246, 180, 56)) return {ActionKind::step_cycle};
+  if (hit(x, y, 214, 246, 126, 56)) return {ActionKind::mode_cycle};
+  if (hit(x, y, 350, 246, 244, 56)) return {ActionKind::filter_cycle};
+  if (hit(x, y, 604, 246, 212, 56)) return {ActionKind::sound_toggle};
   if (hit(x, y, 858, 176, 184, 68) &&
       receiver_controls::action(receiver_controls::Control::tuner_agc,
                                 g_snapshot.controls).kind !=
@@ -430,6 +437,9 @@ bool dashboard_self_check() {
   g_keypad = false;
   const bool ok = handle_touch(60, 150).kind == ActionKind::step_down &&
                    handle_touch(760, 150).kind == ActionKind::step_up &&
+                   handle_touch(270, 270).kind == ActionKind::mode_cycle &&
+                   handle_touch(450, 270).kind == ActionKind::filter_cycle &&
+                   handle_touch(700, 270).kind == ActionKind::sound_toggle &&
                    handle_touch(900, 200).kind == ActionKind::gain_auto &&
                    handle_gain_drag(kGainX + kGainW, kGainY).value == 496;
   g_snapshot.controls.route = ReceiverRoute::direct_q;

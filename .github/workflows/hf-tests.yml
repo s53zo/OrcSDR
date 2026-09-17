@@ -1,0 +1,24 @@
+name: HF receiver
+on:
+  pull_request:
+    paths:
+      - 'apps/orcsdr-tab5/ui/hf_demodulator.*'
+      - 'apps/orcsdr-tab5/ui/shortwave_*'
+      - 'apps/orcsdr-tab5/ui/receiver_tuning_controls.*'
+      - 'apps/orcsdr-tab5/ui/main.cpp'
+      - 'apps/orcsdr-tab5/main/CMakeLists.txt'
+      - 'tests/hf_*'
+      - 'tests/support/hf/**'
+      - 'tools/test-hf-demodulator.sh'
+      - '.github/workflows/hf-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: bash tools/test-hf-demodulator.sh

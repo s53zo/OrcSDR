@@ -10,7 +10,7 @@ apply to later source snapshots.
 | AM broadcast and 119-channel scan | **Hardware-Verified / Experimental** | Exact RC4 package exercised the dashboard and scan; general reception quality remains Experimental. |
 | NOAA Weather Radio | **Implemented** | Current-release RF acceptance is Not Verified. |
 | CB | **Implemented / Runtime-Verified** | Flashed and exercised; operator/RF acceptance remains open. |
-| Shortwave | **Implemented / Experimental** | Generic Browse/NFM workspace only; complete AM/SSB and calibrated HF reception are Not Implemented. |
+| Shortwave | **Implemented / Experimental; host-tested** | Dedicated AM/USB/LSB/CW receiver with mode-specific filters and fine tuning. New SSB/CW modes pass synthetic IQ and dashboard tests; native build and live RF acceptance remain pending. See [HF modes](../HF_MODES.md). |
 | Airband | **Implemented / Experimental** | Generic Browse near 121.5 MHz using NFM; not a complete AM aviation voice receiver. |
 | Marine | **Implemented / Experimental** | Generic NFM routing; no dedicated dashboard/current RF acceptance evidence. |
 | Satellite | **Implemented / Experimental** | Generic routing near 137.5 MHz; no dedicated satellite decoder/dashboard. |

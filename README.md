@@ -31,7 +31,7 @@ Current release images include the matching ESP-Hosted C6 firmware used by the T
 - **Home:** tune and listen while viewing the live spectrum, waterfall, signal level, receiver status, and recently used dashboards.
 - **FM Radio:** receive broadcast FM with stereo audio, RDS station information, presets, and station tuning tools.
 - **AM Radio:** receive broadcast AM with region-aware channel steps, presets, automatic tuning, and a full-band station scan.
-- **Shortwave:** enter the generic Browse/NFM workspace for experimental HF exploration; calibrated HF and complete AM/SSB modes are not yet available.
+- **Shortwave:** dedicated HF receiver with AM and experimental USB, LSB and CW audio modes, mode-specific filters and fine tuning. Host-tested; native firmware and live RF validation remain pending. See [HF modes](docs/HF_MODES.md).
 - **Weather:** quickly tune the standard NOAA weather-radio channels.
 - **Airband:** opens generic Browse near 121.5 MHz. Proper AM aviation voice reception is not yet implemented.
 - **Marine:** listen across the standard VHF marine channel plan.

@@ -8,6 +8,7 @@
 namespace orcsdr::shortwave {
 
 struct Snapshot {
+  Mode mode = Mode::am;
   uint32_t frequency_hz = 7100000;
   uint32_t step_hz = 1000;
   uint32_t filter_bandwidth_hz = 6000;
@@ -32,6 +33,7 @@ enum class ActionKind : uint8_t {
   step_up,
   step_cycle,
   filter_cycle,
+  mode_cycle,
   sound_toggle,
   volume_down,
   volume_up,

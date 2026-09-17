@@ -5,6 +5,13 @@
 
 namespace orcsdr::shortwave {
 
+enum class Mode : uint8_t { am, usb, lsb, cw };
+const char* mode_name(Mode mode);
+Mode next_mode(Mode mode);
+uint32_t default_bandwidth(Mode mode);
+uint32_t clamp_bandwidth(Mode mode, uint32_t bandwidth);
+uint32_t next_bandwidth(Mode mode, uint32_t bandwidth);
+
 enum class ReceiverRoute : uint8_t { unknown, direct_q, hf_upconverter, tuner };
 enum class FilterPreset : uint8_t { narrow, normal, wide };
 

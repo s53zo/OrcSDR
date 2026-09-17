@@ -1,5 +1,6 @@
 #include "shortwave_model.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -23,7 +24,7 @@ constexpr BroadcastBand kBands[] = {
     {"11m", 25670000, 26100000, 25800000},
 };
 
-constexpr uint32_t kSteps[] = {100, 500, 1000, 5000};
+constexpr uint32_t kSteps[] = {10, 100, 500, 1000, 5000};
 
 template <size_t Size>
 bool terminated(const char (&value)[Size]) {
@@ -48,11 +49,40 @@ bool receiver_frequency(uint32_t frequency_hz) {
   return frequency_hz >= 1710000 && frequency_hz <= 30000000;
 }
 
-bool receiver_bandwidth(uint32_t bandwidth_hz) {
-  return bandwidth_hz >= 3000 && bandwidth_hz <= 30000;
+bool receiver_bandwidth(const char* mode, uint32_t bandwidth) {
+  for (Mode candidate : {Mode::am, Mode::usb, Mode::lsb, Mode::cw})
+    if (strcmp(mode, mode_name(candidate)) == 0)
+      return clamp_bandwidth(candidate, bandwidth) == bandwidth;
+  return false;
 }
 
 }  // namespace
+
+const char* mode_name(Mode mode) {
+  switch (mode) {
+    case Mode::usb: return "USB";
+    case Mode::lsb: return "LSB";
+    case Mode::cw: return "CW";
+    default: return "AM";
+  }
+}
+Mode next_mode(Mode mode) {
+  return mode == Mode::am ? Mode::usb : mode == Mode::usb ? Mode::lsb :
+         mode == Mode::lsb ? Mode::cw : Mode::am;
+}
+uint32_t default_bandwidth(Mode mode) {
+  return mode == Mode::am ? 6000 : mode == Mode::cw ? 500 : 2700;
+}
+uint32_t clamp_bandwidth(Mode mode, uint32_t bandwidth) {
+  return mode == Mode::am ? std::clamp(bandwidth, 3000u, 30000u) :
+         mode == Mode::cw ? std::clamp(bandwidth, 250u, 1000u) :
+                            std::clamp(bandwidth, 1800u, 3000u);
+}
+uint32_t next_bandwidth(Mode mode, uint32_t bandwidth) {
+  if (mode == Mode::am) return bandwidth < 6000 ? 6000 : bandwidth < 9000 ? 9000 : 4000;
+  if (mode == Mode::cw) return bandwidth < 500 ? 500 : bandwidth < 1000 ? 1000 : 250;
+  return bandwidth < 2400 ? 2400 : bandwidth < 2700 ? 2700 : bandwidth < 3000 ? 3000 : 1800;
+}
 
 size_t band_count() { return sizeof(kBands) / sizeof(kBands[0]); }
 
@@ -104,16 +134,14 @@ uint32_t filter_bandwidth(FilterPreset preset) {
 
 bool valid(const Memory& memory) {
   return receiver_frequency(memory.frequency_hz) &&
-         receiver_bandwidth(memory.bandwidth_hz) &&
-         strcmp(memory.mode, "AM") == 0 && text_valid(memory);
+         text_valid(memory) && receiver_bandwidth(memory.mode, memory.bandwidth_hz);
 }
 
 bool valid(const LogEntry& entry) {
   return entry.timestamp_utc != 0 && receiver_frequency(entry.frequency_hz) &&
-         receiver_bandwidth(entry.bandwidth_hz) && strcmp(entry.mode, "AM") == 0 &&
+         text_valid(entry) && receiver_bandwidth(entry.mode, entry.bandwidth_hz) &&
          entry.local_offset_minutes >= -14 * 60 &&
-         entry.local_offset_minutes <= 14 * 60 && std::isfinite(entry.signal_dbfs) &&
-         text_valid(entry);
+         entry.local_offset_minutes <= 14 * 60 && std::isfinite(entry.signal_dbfs);
 }
 
 bool model_self_check() {
@@ -132,8 +160,8 @@ bool model_self_check() {
       adjacent_band_frequency(5500000, -1) != 4900000)
     return false;
   if (next_tuning_step(100) != 500 || next_tuning_step(500) != 1000 ||
-      next_tuning_step(1000) != 5000 || next_tuning_step(5000) != 100 ||
-      next_tuning_step(250) != 100 ||
+      next_tuning_step(1000) != 5000 || next_tuning_step(5000) != 10 ||
+      next_tuning_step(250) != 10 || next_tuning_step(10) != 100 ||
       filter_bandwidth(FilterPreset::narrow) != 4000 ||
       filter_bandwidth(FilterPreset::normal) != 6000 ||
       filter_bandwidth(FilterPreset::wide) != 9000)

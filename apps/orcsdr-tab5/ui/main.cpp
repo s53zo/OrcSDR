@@ -47,6 +47,7 @@
 #include "am_dashboard.hpp"
 #include "shortwave_model.hpp"
 #include "shortwave_dashboard.hpp"
+#include "hf_demodulator.hpp"
 #include "receiver_tuning_controls.hpp"
 #include "am_finder.hpp"
 #include "adsb_dashboard.hpp"
@@ -882,8 +883,14 @@ RdsSelection rds_select() {
   return result;
 }
 
+static std::atomic<bool> hf_demod_reset_requested{true};
+static std::atomic<orcsdr::shortwave::Mode> hf_mode{orcsdr::shortwave::Mode::am};
+// Only the DSP path mutates this state; keep its FIR history in PSRAM.
+EXT_RAM_BSS_ATTR static orcsdr::shortwave::Demodulator hf_demod;
+
 /** Soft reset of FM/NFM filter memory after LO change (keep AGC/fade partially). */
 void rtl_audio_reset_demod_filters() {
+  hf_demod_reset_requested.store(true, std::memory_order_release);
   rtl_audio.i_sum = 0;
   rtl_audio.q_sum = 0;
   rtl_audio.rf_phase = 0;
@@ -2693,7 +2700,7 @@ bool rtl_band_from_name(const char* name, RtlBand* out_band) {
 const char* rtl_mode_name(RtlBand band) {
   switch (band) {
     case RtlBand::am: return "AM";
-    case RtlBand::shortwave: return "AM";
+    case RtlBand::shortwave: return orcsdr::shortwave::mode_name(hf_mode.load(std::memory_order_relaxed));
     case RtlBand::wx: return "NFM";
     case RtlBand::cb:
       return cb_mode.load(std::memory_order_relaxed) == CbMode::usb ? "USB"
@@ -2728,7 +2735,7 @@ uint32_t rtl_band_default_frequency(RtlBand band) {
 
 uint32_t rtl_filter_default_hz(RtlBand band) {
   if (band == RtlBand::lora) return lora_bandwidth_hz.load(std::memory_order_relaxed);
-  if (band == RtlBand::shortwave) return orcsdr::receiver_bands::kShortwave.default_bandwidth_hz;
+  if (band == RtlBand::shortwave) return orcsdr::shortwave::default_bandwidth(hf_mode.load(std::memory_order_relaxed));
   if (band == RtlBand::am || band == RtlBand::cb) return kRtlAmFilterDefaultHz;
   if (band == RtlBand::p25) return kP25StepHz;
   if (band == RtlBand::wx || band == RtlBand::browse || band == RtlBand::adsb ||
@@ -2738,6 +2745,8 @@ uint32_t rtl_filter_default_hz(RtlBand band) {
 }
 
 uint32_t rtl_clamp_filter_hz(RtlBand band, uint32_t bandwidth_hz) {
+  if (band == RtlBand::shortwave)
+    return orcsdr::shortwave::clamp_bandwidth(hf_mode.load(std::memory_order_relaxed), bandwidth_hz);
   if (band == RtlBand::lora) {
     if (bandwidth_hz <= 93750) return 62500;
     if (bandwidth_hz <= 187500) return 125000;
@@ -6334,7 +6343,10 @@ void service_visualizer() {
   runtime.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   runtime.sample_rate_sps = metrics.effective_sps;
   runtime.audio_rate_sps = 48000;
-  runtime.audio_demod = rtl_ui_band == RtlBand::am || rtl_ui_band == RtlBand::shortwave ||
+  runtime.audio_demod = rtl_ui_band == RtlBand::shortwave &&
+                                hf_mode.load(std::memory_order_relaxed) != orcsdr::shortwave::Mode::am
+                            ? orcsdr::visualizer::AudioDemod::none
+                            : rtl_ui_band == RtlBand::am || rtl_ui_band == RtlBand::shortwave ||
                                 (rtl_ui_band == RtlBand::cb &&
                                  cb_mode.load(std::memory_order_relaxed) == CbMode::am)
                             ? orcsdr::visualizer::AudioDemod::am
@@ -7675,6 +7687,36 @@ void demodulate_ssb(const uint8_t* iq, size_t bytes, float audio_scale, CbMode m
   queue_audio_samples(audio, audio_count);
 }
 
+void demodulate_hf(const uint8_t* iq, size_t bytes, float audio_scale,
+                   uint32_t sample_rate_sps) {
+  const auto mode = hf_mode.load(std::memory_order_acquire);
+  if (mode == orcsdr::shortwave::Mode::am) {
+    demodulate_am(iq, bytes, audio_scale, sample_rate_sps);
+    hf_demod_reset_requested.store(true, std::memory_order_release);
+    return;
+  }
+  const uint32_t bandwidth = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
+  if (!hf_demod.configure(mode, sample_rate_sps, bandwidth)) return;
+  if (hf_demod_reset_requested.exchange(false, std::memory_order_acq_rel)) hf_demod.reset();
+  static_assert((sizeof(rtl_iq_processing) / 2 + 19) / 20 + 4 <= kRtlAudioBufferSamples,
+                "HF 48 kHz output must fit even at the lowest supported IQ rate");
+  struct Output {
+    int16_t* audio;
+    size_t count;
+    float scale;
+  } out{rtl_audio_buffers[rtl_audio.buffer], 0, audio_scale};
+  hf_demod.process(iq, bytes, [](float value, void* context) {
+    auto& out = *static_cast<Output*>(context);
+    const int16_t sample = shape_audio_sample(value / 128.0f, out.scale);
+    out.audio[out.count++] = sample;
+    const int16_t magnitude = sample < 0 ? -sample : sample;
+    if (magnitude > rtl_audio.peak) rtl_audio.peak = magnitude;
+    rtl_audio.square_sum += static_cast<uint32_t>(sample * sample);
+    ++rtl_audio.samples;
+  }, &out);
+  queue_audio_samples(out.audio, out.count);
+}
+
 bool cb_audio_gate_open() {
   const int threshold = cb_squelch_dbfs.load(std::memory_order_relaxed);
   if (threshold <= -90) {
@@ -7853,7 +7895,9 @@ void run_rtl_capture() {
       } else {
         rtl_audio_play_count = 0;
       }
-    } else if (band == RtlBand::am || band == RtlBand::shortwave) {
+    } else if (band == RtlBand::shortwave) {
+      demodulate_hf(rtl_iq_processing, completed_bytes, audio_scale, kRtlSampleRateSps);
+    } else if (band == RtlBand::am) {
       demodulate_am(rtl_iq_processing, completed_bytes, audio_scale,
                     kRtlSampleRateSps);
     } else if (band != RtlBand::lora) {
@@ -8351,7 +8395,14 @@ static void rtl_dsp_task(void *) {
         } else {
           rtl_audio_play_count = 0;
         }
-      } else if (block.band == RtlBand::am || block.band == RtlBand::shortwave) {
+      } else if (block.band == RtlBand::shortwave) {
+        static uint32_t last_sequence = 0, last_drops = 0;
+        const uint32_t drops = rtl_iq_pipeline_drops.load(std::memory_order_relaxed);
+        if (block.sequence != last_sequence + 1 || drops != last_drops)
+          hf_demod_reset_requested.store(true, std::memory_order_release);
+        last_sequence = block.sequence; last_drops = drops;
+        demodulate_hf(block.data, block.bytes, block.audio_scale, block.sample_rate_sps);
+      } else if (block.band == RtlBand::am) {
         demodulate_am(block.data, block.bytes, block.audio_scale,
                       block.sample_rate_sps);
       } else if (block.band != RtlBand::adsb) {
@@ -8400,6 +8451,7 @@ static void rtl_driver_app_task(void *) {
       }
       const uint8_t volume = rtl_requested_volume.load(std::memory_order_acquire);
       g_stream_band = band;
+      hf_demod_reset_requested.store(true, std::memory_order_release);
       g_stream_audio_scale = (band == RtlBand::wx || band == RtlBand::browse)
                                  ? 12000.0f
                                  : (band == RtlBand::am || band == RtlBand::shortwave ||
@@ -9634,6 +9686,7 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
 
 orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot() {
   orcsdr::shortwave::Snapshot snapshot{};
+  snapshot.mode = hf_mode.load(std::memory_order_relaxed);
   snapshot.frequency_hz = rtl_ui_frequency_hz;
   snapshot.step_hz = rtl_shortwave_step_hz;
   snapshot.filter_bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
@@ -9712,9 +9765,21 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
     case ActionKind::step_cycle:
       rtl_shortwave_step_hz = orcsdr::shortwave::next_tuning_step(rtl_shortwave_step_hz);
       break;
+    case ActionKind::mode_cycle: {
+      const auto mode = orcsdr::shortwave::next_mode(hf_mode.load(std::memory_order_relaxed));
+      hf_mode.store(mode, std::memory_order_release);
+      preferences.putUInt("hf_mode", static_cast<uint32_t>(mode));
+      rtl_filter_bandwidth_hz.store(orcsdr::shortwave::default_bandwidth(mode), std::memory_order_relaxed);
+      rtl_shortwave_step_hz = mode == orcsdr::shortwave::Mode::cw ? 10 :
+                              mode == orcsdr::shortwave::Mode::am ? 1000 : 100;
+      rtl_audio_reset_demod_filters();
+      reset_spectrum_renderer();
+      Serial.printf("RTL_SHORTWAVE_MODE mode=%s\n", orcsdr::shortwave::mode_name(mode));
+      break;
+    }
     case ActionKind::filter_cycle: {
       const uint32_t current = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
-      const uint32_t next = current <= 4000u ? 6000u : current <= 6000u ? 9000u : 4000u;
+      const uint32_t next = orcsdr::shortwave::next_bandwidth(hf_mode.load(std::memory_order_relaxed), current);
       rtl_filter_bandwidth_hz.store(next, std::memory_order_relaxed);
       rtl_audio_reset_demod_filters();
       reset_spectrum_renderer();
@@ -12002,6 +12067,12 @@ void load_state() {
     adsb_settings = {};
     adsb_settings.radar_range_nm = 25;
   }
+  const uint32_t saved_hf_mode = preferences.getUInt("hf_mode", 0);
+  hf_mode.store(saved_hf_mode <= static_cast<uint32_t>(orcsdr::shortwave::Mode::cw)
+                    ? static_cast<orcsdr::shortwave::Mode>(saved_hf_mode)
+                    : orcsdr::shortwave::Mode::am, std::memory_order_relaxed);
+  rtl_shortwave_step_hz = hf_mode.load(std::memory_order_relaxed) == orcsdr::shortwave::Mode::cw
+                              ? 10 : hf_mode.load(std::memory_order_relaxed) == orcsdr::shortwave::Mode::am ? 1000 : 100;
   if (preferences.isKey("last_band")) {
     const auto stored_band = static_cast<RtlBand>(
         preferences.getUInt("last_band", static_cast<uint32_t>(RtlBand::fm)));
@@ -12359,7 +12430,7 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   if (!validate_rtl_tune_frequency(frequency_hz)) return false;
 #endif
   const uint32_t ui_quant_hz =
-      (rtl_ui_band == RtlBand::am || rtl_ui_band == RtlBand::shortwave) ? 100u : 1000u;
+      rtl_ui_band == RtlBand::shortwave ? 10u : rtl_ui_band == RtlBand::am ? 100u : 1000u;
   uint32_t ui_hz = rtl_ui_band == RtlBand::p25
                        ? frequency_hz
                        : (frequency_hz / ui_quant_hz) * ui_quant_hz;
@@ -12380,7 +12451,7 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   }
   const uint32_t lo_hz = rtl_ui_band == RtlBand::p25
                              ? frequency_hz
-                             : rtl_ui_band == RtlBand::am
+                             : (rtl_ui_band == RtlBand::am || rtl_ui_band == RtlBand::shortwave)
                                    ? ui_hz
                              : rtl_ui_band == RtlBand::fm
                                    ? rtl_fm_command_lo_hz(ui_hz)
